@@ -51,6 +51,7 @@
   }
   html {
     background-color: var(--app-chrome-background);
+    font-size: 18px;
   }
   body {
     @apply text-foreground relative;
