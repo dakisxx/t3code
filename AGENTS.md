@@ -45,6 +45,16 @@ Docs:
 
 - Codex App Server docs: https://developers.openai.com/codex/sdk/#app-server
 
+## Linux Desktop Release Symlink
+
+After building a new Linux AppImage (e.g. `bun run dist:desktop:linux`), update the stable symlink so the user's installed `.desktop` entry keeps working without edits:
+
+```bash
+ln -sf T3-Code-<version>-x86_64.AppImage release/T3-Code-latest.AppImage
+```
+
+The desktop entry at `~/.local/share/applications/t3code.desktop` points to `release/T3-Code-latest.AppImage`, not the versioned filename.
+
 ## Reference Repos
 
 - Open-source Codex repo: https://github.com/openai/codex
