@@ -45,9 +45,80 @@ Docs:
 
 - Codex App Server docs: https://developers.openai.com/codex/sdk/#app-server
 
+## Linux Desktop Release Symlink
+
+After building a new Linux AppImage (e.g. `bun run dist:desktop:linux`), update the stable symlink so the user's installed `.desktop` entry keeps working without edits:
+
+```bash
+ln -sf T3-Code-<version>-x86_64.AppImage release/T3-Code-latest.AppImage
+```
+
+The desktop entry at `~/.local/share/applications/t3code.desktop` points to `release/T3-Code-latest.AppImage`, not the versioned filename.
+
 ## Reference Repos
 
 - Open-source Codex repo: https://github.com/openai/codex
 - Codex-Monitor (Tauri, feature-complete, strong reference implementation): https://github.com/Dimillian/CodexMonitor
 
 Use these as implementation references when designing protocol handling, UX flows, and operational safeguards.
+
+## Fork Workflow (Personal)
+
+This checkout is a fork of `pingdotgg/t3code`. Branch convention:
+
+- **`main`** — pristine mirror of `upstream/main`. Never commit here. Only ever fast-forwarded.
+- **`feat/*` / `docs/*` / `chore/*`** — one personal feature/change per branch, branched off `main`. Each branch should be self-contained so it can be PR'd upstream, paused, dropped, or rebased independently.
+- **`personal`** — `main` + all personal feature branches merged in. **This is the branch to build/run from.** Never commit directly here; it should only ever contain merge commits plus whatever's on its feature branches.
+
+Remotes:
+
+- `origin` → `https://github.com/dakisxx/t3code.git` (this fork)
+- `upstream` → `https://github.com/pingdotgg/t3code.git`
+
+### Syncing upstream
+
+```bash
+git fetch upstream
+git checkout main
+git merge --ff-only upstream/main
+git push origin main
+
+git checkout personal
+git merge main           # creates a merge commit on personal
+# resolve any conflicts (likely in files touched by both upstream and a feature)
+git push origin personal
+```
+
+If a merge conflict on `personal` is non-trivial, the cleaner fix is to rebase the offending feature branch onto new `main` first, then re-merge `personal`:
+
+```bash
+git checkout feat/foo
+git rebase main          # resolve conflicts here, in feature context
+git push --force-with-lease origin feat/foo
+
+git checkout personal
+git reset --hard main    # discard old merges
+git merge --no-ff feat/chat-find feat/nord-theme feat/larger-base-font docs/linux-release-symlink docs/fork-workflow
+git push --force-with-lease origin personal
+```
+
+### Adding a new personal feature
+
+```bash
+git checkout main
+git checkout -b feat/your-thing
+# work, commit
+git push -u origin feat/your-thing
+
+git checkout personal
+git merge --no-ff feat/your-thing
+git push origin personal
+```
+
+### Upstreaming a feature
+
+Each `feat/*` branch is already isolated against clean upstream — no rebase needed before opening the PR:
+
+```bash
+gh pr create --repo pingdotgg/t3code --base main --head feat/your-thing
+```

@@ -51,6 +51,7 @@
   }
   html {
     background-color: var(--app-chrome-background);
+    font-size: 18px;
   }
   body {
     @apply text-foreground relative;
@@ -142,6 +143,42 @@
     --warning: var(--color-amber-500);
     --warning-foreground: var(--color-amber-400);
   }
+}
+
+/*
+ * Nord theme (Polar Night + Frost). Applied alongside `.dark` so Tailwind's
+ * `dark:` utilities and other `.dark` rules continue to apply; the selector
+ * `:root.theme-nord` matches the specificity of the dark `@variant` block and
+ * comes later in source order, so its overrides win.
+ */
+:root.theme-nord {
+  color-scheme: dark;
+  --background: #2e3440;
+  --app-chrome-background: var(--background);
+  --foreground: #e5e9f0;
+  --card: #3b4252;
+  --card-foreground: #eceff4;
+  --popover: #3b4252;
+  --popover-foreground: #eceff4;
+  --primary: #88c0d0;
+  --primary-foreground: #2e3440;
+  --secondary: #434c5e;
+  --secondary-foreground: #eceff4;
+  --muted: #3b4252;
+  --muted-foreground: #d8dee9;
+  --accent: #434c5e;
+  --accent-foreground: #eceff4;
+  --destructive: #bf616a;
+  --destructive-foreground: #d08770;
+  --border: color-mix(in srgb, #4c566a 70%, transparent);
+  --input: color-mix(in srgb, #4c566a 55%, transparent);
+  --ring: #88c0d0;
+  --info: #81a1c1;
+  --info-foreground: #88c0d0;
+  --success: #a3be8c;
+  --success-foreground: #a3be8c;
+  --warning: #ebcb8b;
+  --warning-foreground: #ebcb8b;
 }
 
 body {
