@@ -48,6 +48,10 @@ import { OrchestrationEngineService } from "../Services/OrchestrationEngine.ts";
 import { ProviderRuntimeIngestionService } from "../Services/ProviderRuntimeIngestion.ts";
 import { ProjectionSnapshotQuery } from "../Services/ProjectionSnapshotQuery.ts";
 import { ServerConfig } from "../../config.ts";
+import {
+  SystemNotifications,
+  type AttentionNotificationInput,
+} from "../../notifications/SystemNotifications.ts";
 import { ServerSettingsService } from "../../serverSettings.ts";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 
@@ -217,7 +221,10 @@ describe("ProviderRuntimeIngestion", () => {
     }
   });
 
-  async function createHarness(options?: { serverSettings?: Partial<ServerSettings> }) {
+  async function createHarness(options?: {
+    serverSettings?: Partial<ServerSettings>;
+    notificationCalls?: Array<AttentionNotificationInput>;
+  }) {
     const workspaceRoot = makeTempDir("t3-provider-project-");
     fs.mkdirSync(path.join(workspaceRoot, ".git"));
     const provider = createProviderServiceHarness();
@@ -239,6 +246,14 @@ describe("ProviderRuntimeIngestion", () => {
       Layer.provideMerge(SqlitePersistenceMemory),
       Layer.provideMerge(Layer.succeed(ProviderService, provider.service)),
       Layer.provideMerge(makeTestServerSettingsLayer(options?.serverSettings)),
+      Layer.provideMerge(
+        SystemNotifications.layerTest({
+          notifyAttentionNeeded: (input) =>
+            Effect.sync(() => {
+              options?.notificationCalls?.push(input);
+            }),
+        }),
+      ),
       Layer.provideMerge(ServerConfig.layerTest(process.cwd(), process.cwd())),
       Layer.provideMerge(NodeServices.layer),
     );
@@ -358,6 +373,103 @@ describe("ProviderRuntimeIngestion", () => {
     );
     expect(thread.session?.status).toBe("error");
     expect(thread.session?.lastError).toBe("turn failed");
+  });
+
+  it("sends system notifications when approval or user input is requested and attention notifications are enabled", async () => {
+    const notificationCalls: Array<AttentionNotificationInput> = [];
+    const harness = await createHarness({
+      serverSettings: { enableAttentionNotifications: true },
+      notificationCalls,
+    });
+
+    harness.emit({
+      type: "turn.started",
+      eventId: asEventId("evt-turn-started-attention-notify"),
+      provider: ProviderDriverKind.make("codex"),
+      threadId: asThreadId("thread-1"),
+      createdAt: "2026-01-01T00:00:00.000Z",
+      turnId: asTurnId("turn-attention-notify"),
+    });
+
+    await waitForThread(
+      harness.readModel,
+      (thread) =>
+        thread.session?.status === "running" &&
+        thread.session?.activeTurnId === "turn-attention-notify",
+    );
+
+    harness.emit({
+      type: "request.opened",
+      eventId: asEventId("evt-request-opened-attention-notify"),
+      provider: ProviderDriverKind.make("codex"),
+      threadId: asThreadId("thread-1"),
+      createdAt: "2026-01-01T00:00:01.000Z",
+      turnId: asTurnId("turn-attention-notify"),
+      requestId: "approval-request-1",
+      payload: {
+        requestType: "exec_command_approval",
+        detail: "Run git status",
+      },
+    });
+
+    harness.emit({
+      type: "user-input.requested",
+      eventId: asEventId("evt-user-input-requested-attention-notify"),
+      provider: ProviderDriverKind.make("codex"),
+      threadId: asThreadId("thread-1"),
+      createdAt: "2026-01-01T00:00:02.000Z",
+      turnId: asTurnId("turn-attention-notify"),
+      requestId: "user-input-request-1",
+      payload: {
+        questions: [
+          {
+            id: "question-1",
+            header: "Confirm",
+            question: "Which path should I use?",
+            options: [
+              {
+                label: "Default",
+                description: "Use the default path.",
+              },
+            ],
+          },
+        ],
+      },
+    });
+
+    harness.emit({
+      type: "turn.completed",
+      eventId: asEventId("evt-turn-completed-attention-notify"),
+      provider: ProviderDriverKind.make("codex"),
+      threadId: asThreadId("thread-1"),
+      createdAt: "2026-01-01T00:00:03.000Z",
+      turnId: asTurnId("turn-attention-notify"),
+      payload: {
+        state: "completed",
+      },
+    });
+
+    await harness.drain();
+
+    expect(notificationCalls).toEqual([
+      {
+        providerName: "codex",
+        threadTitle: "Thread",
+        reason: "approval",
+        detail: "Run git status",
+      },
+      {
+        providerName: "codex",
+        threadTitle: "Thread",
+        reason: "user-input",
+      },
+      {
+        providerName: "codex",
+        threadTitle: "Thread",
+        reason: "turn-completed",
+        turnState: "completed",
+      },
+    ]);
   });
 
   it("applies provider session.state.changed transitions directly", async () => {

@@ -410,6 +410,10 @@ export function useSettingsRestore(onRestored?: () => void) {
       ...(settings.enableAssistantStreaming !== DEFAULT_UNIFIED_SETTINGS.enableAssistantStreaming
         ? ["Assistant output"]
         : []),
+      ...(settings.enableAttentionNotifications !==
+      DEFAULT_UNIFIED_SETTINGS.enableAttentionNotifications
+        ? ["Attention notifications"]
+        : []),
       ...(Duration.toMillis(settings.automaticGitFetchInterval) !==
       Duration.toMillis(DEFAULT_UNIFIED_SETTINGS.automaticGitFetchInterval)
         ? ["Automatic Git fetch interval"]
@@ -439,6 +443,7 @@ export function useSettingsRestore(onRestored?: () => void) {
       settings.diffWordWrap,
       settings.automaticGitFetchInterval,
       settings.enableAssistantStreaming,
+      settings.enableAttentionNotifications,
       settings.sidebarThreadPreviewCount,
       settings.timestampFormat,
       theme,
@@ -463,6 +468,7 @@ export function useSettingsRestore(onRestored?: () => void) {
       sidebarThreadPreviewCount: DEFAULT_UNIFIED_SETTINGS.sidebarThreadPreviewCount,
       autoOpenPlanSidebar: DEFAULT_UNIFIED_SETTINGS.autoOpenPlanSidebar,
       enableAssistantStreaming: DEFAULT_UNIFIED_SETTINGS.enableAssistantStreaming,
+      enableAttentionNotifications: DEFAULT_UNIFIED_SETTINGS.enableAttentionNotifications,
       automaticGitFetchInterval: DEFAULT_UNIFIED_SETTINGS.automaticGitFetchInterval,
       defaultThreadEnvMode: DEFAULT_UNIFIED_SETTINGS.defaultThreadEnvMode,
       addProjectBaseDirectory: DEFAULT_UNIFIED_SETTINGS.addProjectBaseDirectory,
@@ -667,6 +673,34 @@ export function GeneralSettingsPanel() {
                 updateSettings({ enableAssistantStreaming: Boolean(checked) })
               }
               aria-label="Stream assistant messages"
+            />
+          }
+        />
+
+        <SettingsRow
+          title="Attention notifications"
+          description="Send a system notification when an agent needs approval, asks for input, or finishes a turn."
+          resetAction={
+            settings.enableAttentionNotifications !==
+            DEFAULT_UNIFIED_SETTINGS.enableAttentionNotifications ? (
+              <SettingResetButton
+                label="attention notifications"
+                onClick={() =>
+                  updateSettings({
+                    enableAttentionNotifications:
+                      DEFAULT_UNIFIED_SETTINGS.enableAttentionNotifications,
+                  })
+                }
+              />
+            ) : null
+          }
+          control={
+            <Switch
+              checked={settings.enableAttentionNotifications}
+              onCheckedChange={(checked) =>
+                updateSettings({ enableAttentionNotifications: Boolean(checked) })
+              }
+              aria-label="Notify when an agent needs attention"
             />
           }
         />
