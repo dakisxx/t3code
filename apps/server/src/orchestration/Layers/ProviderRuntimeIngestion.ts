@@ -38,6 +38,10 @@ import {
   type ProviderRuntimeIngestionShape,
 } from "../Services/ProviderRuntimeIngestion.ts";
 import { ServerSettingsService } from "../../serverSettings.ts";
+import {
+  SystemNotifications,
+  type AttentionNotificationInput,
+} from "../../notifications/SystemNotifications.ts";
 
 const providerTurnKey = (threadId: ThreadId, turnId: TurnId) => `${threadId}:${turnId}`;
 
@@ -605,6 +609,31 @@ function runtimeEventToActivities(
   return [];
 }
 
+function attentionNotificationInputFromEvent(
+  event: ProviderRuntimeEvent,
+): Pick<AttentionNotificationInput, "reason" | "turnState" | "detail"> | undefined {
+  if (event.type === "request.opened" && event.payload.requestType !== "tool_user_input") {
+    return {
+      reason: "approval",
+      ...(event.payload.detail ? { detail: event.payload.detail } : {}),
+    };
+  }
+  if (event.type === "user-input.requested") {
+    return { reason: "user-input" };
+  }
+  if (event.type === "turn.completed") {
+    const turnState = normalizeRuntimeTurnState(event.payload.state);
+    return {
+      reason: "turn-completed",
+      turnState,
+      ...(turnState === "failed" && event.payload.errorMessage
+        ? { detail: event.payload.errorMessage }
+        : {}),
+    };
+  }
+  return undefined;
+}
+
 const make = Effect.gen(function* () {
   const crypto = yield* Crypto.Crypto;
   const orchestrationEngine = yield* OrchestrationEngineService;
@@ -612,6 +641,7 @@ const make = Effect.gen(function* () {
   const providerService = yield* ProviderService;
   const projectionTurnRepository = yield* ProjectionTurnRepository;
   const serverSettingsService = yield* ServerSettingsService;
+  const systemNotifications = yield* SystemNotifications;
   const providerCommandId = (event: ProviderRuntimeEvent, tag: string) =>
     crypto.randomUUIDv4.pipe(
       Effect.map((uuid) => CommandId.make(`provider:${event.eventId}:${tag}:${uuid}`)),
@@ -1316,6 +1346,21 @@ const make = Effect.gen(function* () {
               updatedAt: now,
             },
             createdAt: now,
+          });
+        }
+      }
+
+      const attentionNotificationInput = attentionNotificationInputFromEvent(event);
+      if (
+        attentionNotificationInput !== undefined &&
+        (activeTurnId === null || eventTurnId === undefined || sameId(activeTurnId, eventTurnId))
+      ) {
+        const settings = yield* serverSettingsService.getSettings;
+        if (settings.enableAttentionNotifications) {
+          yield* systemNotifications.notifyAttentionNeeded({
+            providerName: event.provider,
+            threadTitle: thread.title,
+            ...attentionNotificationInput,
           });
         }
       }
