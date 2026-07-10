@@ -7,6 +7,7 @@ import {
   OrchestrationCheckpointFile,
   OrchestrationProposedPlanId,
   OrchestrationReadModel,
+  OrchestrationSearchThreadsResult,
   OrchestrationShellSnapshot,
   OrchestrationThread,
   ProjectScript,
@@ -138,6 +139,25 @@ const ProjectionFullThreadDiffContextRowSchema = Schema.Struct({
   latestCheckpointTurnCount: Schema.NullOr(NonNegativeInt),
   toCheckpointRef: Schema.NullOr(CheckpointRef),
 });
+const ThreadSearchLookupInput = Schema.Struct({
+  query: Schema.String,
+  pattern: Schema.String,
+  limit: NonNegativeInt,
+  includeArchived: Schema.Number,
+});
+const ProjectionThreadSearchRowSchema = Schema.Struct({
+  threadId: ThreadId,
+  projectId: ProjectId,
+  projectTitle: Schema.String,
+  workspaceRoot: Schema.String,
+  threadTitle: Schema.String,
+  messageId: MessageId,
+  turnId: Schema.NullOr(TurnId),
+  role: Schema.Literals(["user", "assistant", "system"]),
+  snippet: Schema.String,
+  createdAt: IsoDateTime,
+  updatedAt: IsoDateTime,
+});
 
 const REQUIRED_SNAPSHOT_PROJECTORS = [
   ORCHESTRATION_PROJECTOR_NAMES.projects,
@@ -258,6 +278,10 @@ function toPersistenceSqlOrDecodeError(sqlOperation: string, decodeOperation: st
     Schema.isSchemaError(cause)
       ? toPersistenceDecodeError(decodeOperation)(cause)
       : toPersistenceSqlError(sqlOperation)(cause);
+}
+
+function escapeLikePattern(value: string): string {
+  return `%${value.replaceAll("\\", "\\\\").replaceAll("%", "\\%").replaceAll("_", "\\_")}%`;
 }
 
 const makeProjectionSnapshotQuery = Effect.gen(function* () {
@@ -929,6 +953,67 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
         LIMIT 1
       `,
   });
+
+  const searchThreadMessageRows = SqlSchema.findAll({
+    Request: ThreadSearchLookupInput,
+    Result: ProjectionThreadSearchRowSchema,
+    execute: ({ query, pattern, limit, includeArchived }) =>
+      sql`
+        SELECT
+          threads.thread_id AS "threadId",
+          threads.project_id AS "projectId",
+          projects.title AS "projectTitle",
+          projects.workspace_root AS "workspaceRoot",
+          threads.title AS "threadTitle",
+          messages.message_id AS "messageId",
+          messages.turn_id AS "turnId",
+          messages.role,
+          CASE
+            WHEN length(messages.text) <= 260 THEN messages.text
+            ELSE substr(
+              messages.text,
+              max(1, instr(lower(messages.text), lower(${query})) - 80),
+              260
+            )
+          END AS snippet,
+          messages.created_at AS "createdAt",
+          messages.updated_at AS "updatedAt"
+        FROM projection_thread_messages AS messages
+        INNER JOIN projection_threads AS threads
+          ON threads.thread_id = messages.thread_id
+        INNER JOIN projection_projects AS projects
+          ON projects.project_id = threads.project_id
+        WHERE threads.deleted_at IS NULL
+          AND projects.deleted_at IS NULL
+          AND (${includeArchived} = 1 OR threads.archived_at IS NULL)
+          AND lower(messages.text) LIKE lower(${pattern}) ESCAPE '\\'
+        ORDER BY messages.created_at DESC, messages.message_id DESC
+        LIMIT ${limit}
+      `,
+  });
+
+  const searchThreads: ProjectionSnapshotQueryShape["searchThreads"] = (input) => {
+    const query = input.query.trim();
+    const limit = input.limit ?? 20;
+    if (query.length === 0 || limit <= 0) {
+      return Effect.succeed({ query, results: [] });
+    }
+
+    return searchThreadMessageRows({
+      query,
+      pattern: escapeLikePattern(query),
+      limit,
+      includeArchived: input.includeArchived === true ? 1 : 0,
+    }).pipe(
+      Effect.map((rows): OrchestrationSearchThreadsResult => ({ query, results: rows })),
+      Effect.mapError(
+        toPersistenceSqlOrDecodeError(
+          "ProjectionSnapshotQuery.searchThreads:query",
+          "ProjectionSnapshotQuery.searchThreads:decodeRows",
+        ),
+      ),
+    );
+  };
 
   const getSnapshot: ProjectionSnapshotQueryShape["getSnapshot"] = () =>
     sql
@@ -2038,6 +2123,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
     getSnapshot,
     getShellSnapshot,
     getArchivedShellSnapshot,
+    searchThreads,
     getSnapshotSequence,
     getCounts,
     getActiveProjectByWorkspaceRoot,

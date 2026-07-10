@@ -100,6 +100,7 @@ describe("buildThreadActionItems", () => {
       isInSubmenu: false,
       projectSearchItems: [],
       threadSearchItems: threadItems,
+      messageSearchItems: [],
     });
 
     expect(groups).toHaveLength(1);
@@ -133,6 +134,7 @@ describe("buildThreadActionItems", () => {
       isInSubmenu: false,
       projectSearchItems: [],
       threadSearchItems: [],
+      messageSearchItems: [],
     });
 
     expect(groups).toHaveLength(1);

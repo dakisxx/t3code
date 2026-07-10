@@ -5,6 +5,7 @@ import {
   DEFAULT_MODEL,
   type EnvironmentId,
   type FilesystemBrowseResult,
+  type OrchestrationThreadSearchResult,
   type ProjectId,
   ProviderInstanceId,
   type SourceControlDiscoveryResult,
@@ -104,6 +105,7 @@ import { ProjectFavicon } from "./ProjectFavicon";
 import { ThreadRowLeadingStatus, ThreadRowTrailingStatus } from "./ThreadStatusIndicators";
 import { useServerKeybindings } from "../rpc/serverState";
 import { resolveShortcutCommand } from "../keybindings";
+import { formatRelativeTimeLabel } from "../timestampFormat";
 import {
   Command,
   CommandDialog,
@@ -121,6 +123,13 @@ import type { ChatComposerHandle } from "./chat/ChatComposer";
 
 const EMPTY_BROWSE_ENTRIES: FilesystemBrowseResult["entries"] = [];
 const BROWSE_STALE_TIME_MS = 30_000;
+const MESSAGE_SEARCH_MIN_QUERY_LENGTH = 2;
+const MESSAGE_SEARCH_LIMIT_PER_ENVIRONMENT = 8;
+const MESSAGE_SEARCH_DISPLAY_LIMIT = 12;
+
+type EnvironmentThreadSearchResult = OrchestrationThreadSearchResult & {
+  readonly environmentId: EnvironmentId;
+};
 
 function getLocalFileManagerName(platform: string): string {
   if (isMacPlatform(platform)) {
@@ -406,9 +415,24 @@ function OpenCommandPaletteDialog() {
     useHandleNewThread();
   const projects = useStore(useShallow(selectProjectsAcrossEnvironments));
   const threads = useStore(useShallow(selectSidebarThreadsAcrossEnvironments));
+  const searchableEnvironmentIds = useMemo(() => {
+    const environmentIds = new Set<EnvironmentId>();
+    for (const project of projects) {
+      environmentIds.add(project.environmentId);
+    }
+    for (const thread of threads) {
+      environmentIds.add(thread.environmentId);
+    }
+    return [...environmentIds];
+  }, [projects, threads]);
   const keybindings = useServerKeybindings();
   const [viewStack, setViewStack] = useState<CommandPaletteView[]>([]);
   const currentView = viewStack.at(-1) ?? null;
+  const [messageSearchState, setMessageSearchState] = useState<{
+    readonly query: string;
+    readonly isPending: boolean;
+    readonly results: ReadonlyArray<EnvironmentThreadSearchResult>;
+  }>({ query: "", isPending: false, results: [] });
   const [browseGeneration, setBrowseGeneration] = useState(0);
   const [addProjectEnvironmentId, setAddProjectEnvironmentId] = useState<EnvironmentId | null>(
     null,
@@ -711,6 +735,118 @@ function OpenCommandPaletteDialog() {
     [activeThreadId, navigate, projectTitleById, settings.sidebarThreadSortOrder, threads],
   );
   const recentThreadItems = allThreadItems.slice(0, RECENT_THREAD_LIMIT);
+
+  useEffect(() => {
+    const searchQuery = deferredQuery.trim();
+    const canSearchMessages =
+      currentView === null &&
+      !isBrowsing &&
+      !isActionsOnly &&
+      searchQuery.length >= MESSAGE_SEARCH_MIN_QUERY_LENGTH &&
+      searchableEnvironmentIds.length > 0;
+
+    if (!canSearchMessages) {
+      setMessageSearchState({ query: searchQuery, isPending: false, results: [] });
+      return;
+    }
+
+    let cancelled = false;
+    setMessageSearchState((previous) => ({
+      query: searchQuery,
+      isPending: true,
+      results: previous.query === searchQuery ? previous.results : [],
+    }));
+
+    const search = async () => {
+      const resultsByEnvironment = await Promise.all(
+        searchableEnvironmentIds.map(async (environmentId) => {
+          const api = readEnvironmentApi(environmentId);
+          if (!api) {
+            return [];
+          }
+
+          try {
+            const result = await api.orchestration.searchThreads({
+              query: searchQuery,
+              limit: MESSAGE_SEARCH_LIMIT_PER_ENVIRONMENT,
+            });
+            return result.results.map((entry) => Object.assign({ environmentId }, entry));
+          } catch {
+            return [];
+          }
+        }),
+      );
+
+      if (cancelled) {
+        return;
+      }
+
+      const results = resultsByEnvironment
+        .flat()
+        .toSorted(
+          (left, right) =>
+            Date.parse(right.createdAt) - Date.parse(left.createdAt) ||
+            right.messageId.localeCompare(left.messageId),
+        )
+        .slice(0, MESSAGE_SEARCH_DISPLAY_LIMIT);
+
+      setMessageSearchState({ query: searchQuery, isPending: false, results });
+    };
+
+    void search();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [currentView, deferredQuery, isActionsOnly, isBrowsing, searchableEnvironmentIds]);
+
+  const messageSearchItems = useMemo<CommandPaletteActionItem[]>(() => {
+    const items = messageSearchState.results.map((result): CommandPaletteActionItem => {
+      const snippet = result.snippet.replace(/\s+/g, " ").trim();
+      const roleLabel =
+        result.role === "assistant" ? "Assistant" : result.role === "system" ? "System" : "User";
+
+      return {
+        kind: "action",
+        value: `message:${result.environmentId}:${result.threadId}:${result.messageId}`,
+        searchTerms: [
+          result.threadTitle,
+          result.projectTitle,
+          result.workspaceRoot,
+          result.role,
+          snippet,
+        ],
+        title: result.threadTitle,
+        description: `${result.projectTitle} · ${roleLabel}: ${snippet}`,
+        timestamp: formatRelativeTimeLabel(result.createdAt),
+        icon: <MessageSquareIcon className={ITEM_ICON_CLASS} />,
+        run: async () => {
+          await navigate({
+            to: "/$environmentId/$threadId",
+            params: buildThreadRouteParams(scopeThreadRef(result.environmentId, result.threadId)),
+          });
+          setOpen(false);
+        },
+      };
+    });
+
+    if (messageSearchState.isPending) {
+      return [
+        {
+          kind: "action",
+          value: `message-search:pending:${messageSearchState.query}`,
+          searchTerms: [messageSearchState.query],
+          title: "Searching messages...",
+          icon: <MessageSquareIcon className={ITEM_ICON_CLASS} />,
+          disabled: true,
+          run: async () => undefined,
+        },
+        ...items,
+      ];
+    }
+
+    return items;
+  }, [messageSearchState, navigate, setOpen]);
 
   function pushPaletteView(view: CommandPaletteView): void {
     setViewStack((previousViews) => [
@@ -1070,6 +1206,7 @@ function OpenCommandPaletteDialog() {
     isInSubmenu: currentView !== null,
     projectSearchItems: projectSearchItems,
     threadSearchItems: allThreadItems,
+    messageSearchItems,
   });
 
   const handleAddProject = useCallback(

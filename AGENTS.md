@@ -48,6 +48,12 @@ Docs:
 
 ## Linux Desktop Release Symlink
 
+Personal workflow note: when the user says "build it" in this checkout, they mean build the desktop client Linux AppImage, not just the web/server production bundles. Run:
+
+```bash
+mise exec -- bun run dist:desktop:linux
+```
+
 After building a new Linux AppImage (e.g. `bun run dist:desktop:linux`), update the stable symlink so the user's installed `.desktop` entry keeps working without edits:
 
 ```bash
