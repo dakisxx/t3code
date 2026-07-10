@@ -81,7 +81,7 @@ export function readThemePreference(): Theme {
       cause,
     });
   }
-  if (raw === "light" || raw === "dark" || raw === "system") return raw;
+  if (raw === "light" || raw === "dark" || raw === "system" || raw === "nord") return raw;
   return DEFAULT_THEME_SNAPSHOT.theme;
 }
 
