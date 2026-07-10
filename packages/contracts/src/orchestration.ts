@@ -1355,6 +1355,6 @@ export class OrchestrationSearchThreadsError extends Schema.TaggedErrorClass<Orc
   "OrchestrationSearchThreadsError",
   {
     message: TrimmedNonEmptyString,
-    cause: Schema.optional(Schema.Defect),
+    cause: Schema.optional(Schema.Defect()),
   },
 ) {}

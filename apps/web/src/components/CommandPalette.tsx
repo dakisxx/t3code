@@ -1075,6 +1075,7 @@ function OpenCommandPaletteDialog(props: {
     isInSubmenu: currentView !== null,
     projectSearchItems: projectSearchItems,
     threadSearchItems: allThreadItems,
+    messageSearchItems: [],
   });
 
   const handleAddProjectForEnvironment = useCallback(
