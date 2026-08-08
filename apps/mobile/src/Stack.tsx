@@ -10,10 +10,12 @@ import {
   createNativeStackScreen,
   type NativeStackNavigationOptions,
 } from "@react-navigation/native-stack";
+import { useEffect, useRef } from "react";
 import { DynamicColorIOS, Platform, Pressable, ScrollView, StyleSheet } from "react-native";
 import { useResolveClassNames } from "uniwind";
 
 import { AppText as Text } from "./components/AppText";
+import { getCompactBrandHeaderOptions } from "./components/CompactBrandTitle";
 import { ArchivedThreadsRouteScreen } from "./features/archive/ArchivedThreadsRouteScreen";
 import { useAgentNotificationNavigation } from "./features/agent-awareness/notificationNavigation";
 import { ClerkSettingsSheetDetentProvider } from "./features/cloud/ClerkSettingsSheetDetent";
@@ -44,8 +46,21 @@ import { SettingsAppearanceRouteScreen } from "./features/settings/SettingsAppea
 import { SettingsClientStorageRouteScreen } from "./features/settings/SettingsClientStorageRouteScreen";
 import { SettingsAuthRouteScreen } from "./features/settings/SettingsAuthRouteScreen";
 import { SettingsEnvironmentsRouteScreen } from "./features/settings/SettingsEnvironmentsRouteScreen";
+import { SettingsLegalRouteScreen } from "./features/settings/SettingsLegalRouteScreen";
+import { SettingsProjectGroupingRouteScreen } from "./features/settings/SettingsProjectGroupingRouteScreen";
 import { SettingsRouteScreen } from "./features/settings/SettingsRouteScreen";
-import { SettingsWaitlistRouteScreen } from "./features/settings/SettingsWaitlistRouteScreen";
+import { ShowcaseCaptureCoordinator } from "./features/showcase/ShowcaseCaptureCoordinator";
+import {
+  SettingsLegalDocumentCloseHeaderButton,
+  SettingsLegalDocumentExternalHeaderButton,
+} from "./features/settings/components/SettingsLegalDocumentRouteScreen";
+import { useAppShortcuts } from "./features/shortcuts/useAppShortcuts";
+import { useIncomingShare } from "./features/sharing/IncomingShareProvider";
+import {
+  EMPTY_INCOMING_SHARE_PRESENTATION_STATE,
+  transitionIncomingSharePresentation,
+} from "./features/sharing/incoming-share-presentation";
+import { NATIVE_LIQUID_GLASS_SUPPORTED } from "./native/native-glass";
 import { nativeHeaderScrollEdgeEffects } from "./native/StackHeader";
 import { useThreadOutboxDrain } from "./state/use-thread-outbox-drain";
 
@@ -65,19 +80,24 @@ type AppScreenOptions = NativeStackNavigationOptions & {
 // Shared header presets. Screens only override genuinely dynamic values (titles,
 // subtitles, toolbar items, search callbacks) via NativeStackScreenOptions.
 //
-// GLASS: transparent header over the screen's primary scroll view, with the iOS 26
-// scroll-edge blur sampling the content (Home, Thread, Files tree, settings sheet).
+// GLASS: transparent header over the screen's primary scroll view on supported
+// iOS versions. Pre-glass iOS gets the same solid material as internal-scroll
+// surfaces so content is laid out below the bar instead of underlapping it.
 const GLASS_HEADER_OPTIONS: AppScreenOptions = {
   headerBackButtonDisplayMode: "minimal",
   headerBackTitle: "",
   headerLargeTitle: false,
   headerShadowVisible: false,
   headerShown: true,
-  headerStyle: Platform.OS === "ios" ? { backgroundColor: "transparent" } : undefined,
+  headerStyle: NATIVE_LIQUID_GLASS_SUPPORTED
+    ? { backgroundColor: "transparent" }
+    : SHEET_BACKGROUND_COLOR !== undefined
+      ? { backgroundColor: SHEET_BACKGROUND_COLOR as unknown as string }
+      : undefined,
   headerTitleStyle: { fontSize: 18, fontWeight: "800" },
-  headerTransparent: Platform.OS === "ios",
-  scrollEdgeEffects: Platform.OS === "ios" ? HEADER_SCROLL_EDGE_EFFECTS : undefined,
-  unstable_navigationItemStyle: Platform.OS === "ios" ? "editor" : undefined,
+  headerTransparent: NATIVE_LIQUID_GLASS_SUPPORTED,
+  scrollEdgeEffects: NATIVE_LIQUID_GLASS_SUPPORTED ? HEADER_SCROLL_EDGE_EFFECTS : undefined,
+  unstable_navigationItemStyle: NATIVE_LIQUID_GLASS_SUPPORTED ? "editor" : undefined,
 };
 
 // SOLID: opaque sheet-colored header for surfaces whose content scrolls internally
@@ -103,6 +123,14 @@ const SOLID_HEADER_OPTIONS: AppScreenOptions = {
 const SHEET_SOLID_HEADER_OPTIONS: AppScreenOptions = {
   ...SOLID_HEADER_OPTIONS,
   unstable_navigationItemStyle: undefined,
+};
+
+const LEGAL_DOCUMENT_HEADER_OPTIONS: AppScreenOptions = {
+  ...SHEET_SOLID_HEADER_OPTIONS,
+  headerBackVisible: false,
+  headerLeft: SettingsLegalDocumentCloseHeaderButton,
+  headerRight: () => <SettingsLegalDocumentExternalHeaderButton />,
+  presentation: "fullScreenModal",
 };
 
 const SettingsSheetStack = createNativeStackNavigator({
@@ -148,6 +176,13 @@ const SettingsSheetStack = createNativeStackNavigator({
         title: "Appearance",
       },
     }),
+    SettingsProjectGrouping: createNativeStackScreen({
+      screen: SettingsProjectGroupingRouteScreen,
+      linking: "project-grouping",
+      options: {
+        title: "Project Grouping",
+      },
+    }),
     SettingsClientStorage: createNativeStackScreen({
       screen: SettingsClientStorageRouteScreen,
       linking: "client-storage",
@@ -163,10 +198,11 @@ const SettingsSheetStack = createNativeStackNavigator({
       },
     }),
     SettingsWaitlist: createNativeStackScreen({
-      screen: SettingsWaitlistRouteScreen,
+      // Keep the old deep link working after the Connect GA launch.
+      screen: SettingsAuthRouteScreen,
       linking: "waitlist",
       options: {
-        title: "Join the waitlist",
+        title: "Sign in",
       },
     }),
   },
@@ -238,6 +274,7 @@ const WORKSPACE_OVERLAY_ROUTES = new Set([
   "GitConfirm",
   "GitOverview",
   "NewTaskSheet",
+  "SettingsLegal",
   "SettingsSheet",
   "ThreadReviewComment",
 ]);
@@ -256,14 +293,42 @@ function workspacePathFromState(state: NavigationState): string {
   return path.startsWith("/") ? path : `/${path}`;
 }
 
+// The drain hook subscribes to the outbox, all thread shells, projects, and
+// connection statuses. Hosting it in a null-rendering leaf keeps those
+// updates from re-rendering RootStackLayout (and with it every screen) on
+// each enqueue, shell change, or reconnect.
+function ThreadOutboxDrainWorker() {
+  useThreadOutboxDrain();
+  return null;
+}
+
 function RootStackLayout(props: {
   readonly children: React.ReactNode;
   readonly state: NavigationState;
 }) {
+  const navigation = useNavigation();
+  const { pendingShare } = useIncomingShare();
+  const sharePresentationRef = useRef(EMPTY_INCOMING_SHARE_PRESENTATION_STATE);
   useAgentNotificationNavigation();
-  useThreadOutboxDrain();
   // Presents the T3 Connect onboarding sheet after an in-session sign-in.
   useConnectOnboardingNavigation();
+  // Launcher app shortcuts: routes shortcut taps and tracks opened threads.
+  useAppShortcuts(props.state);
+  useEffect(() => {
+    const topRouteName = props.state.routes[props.state.index]?.name;
+    const transition = transitionIncomingSharePresentation(sharePresentationRef.current, {
+      isShareSheetPresented: topRouteName === "NewTaskSheet",
+      pendingShareId: pendingShare?.id ?? null,
+    });
+    sharePresentationRef.current = transition.state;
+    if (!transition.shareIdToPresent) {
+      return;
+    }
+    navigation.navigate("NewTaskSheet", {
+      screen: "NewTask",
+      params: { incomingShareId: transition.shareIdToPresent },
+    });
+  }, [navigation, pendingShare, props.state]);
   // Full pathname (sheets included) for keyboard-command scoping; the
   // workspace layout only reacts to the underlying non-overlay route.
   const path = getPathFromState(props.state, navigationPathConfig);
@@ -272,6 +337,8 @@ function RootStackLayout(props: {
 
   return (
     <HardwareKeyboardCommandProvider pathname={pathname}>
+      <ThreadOutboxDrainWorker />
+      <ShowcaseCaptureCoordinator pathname={pathname} />
       <ClerkSettingsSheetDetentProvider initiallyExpanded={false}>
         <AdaptiveWorkspaceLayout pathname={workspacePathname}>
           {props.children}
@@ -334,7 +401,7 @@ export const RootStack = createNativeStackNavigator({
         ...GLASS_HEADER_OPTIONS,
         contentStyle: { backgroundColor: "transparent" },
         headerBackVisible: false,
-        title: "Threads",
+        ...getCompactBrandHeaderOptions(),
       },
     }),
     Thread: createNativeStackScreen({
@@ -356,9 +423,11 @@ export const RootStack = createNativeStackNavigator({
       screen: ReviewCommentComposerSheet,
       linking: `${THREAD_LINKING_PREFIX}/review-comment`,
       options: {
-        presentation: "formSheet",
-        sheetAllowedDetents: [0.55, 0.92],
-        sheetGrabberVisible: true,
+        // Android cannot host the keyboard-driven comment composer inside a
+        // formSheet; use a full-screen modal there instead.
+        presentation: Platform.OS === "android" ? "fullScreenModal" : "formSheet",
+        sheetAllowedDetents: Platform.OS === "android" ? undefined : [0.55, 0.92],
+        sheetGrabberVisible: Platform.OS !== "android",
       },
     }),
     ThreadFiles: createNativeStackScreen({
@@ -420,18 +489,32 @@ export const RootStack = createNativeStackNavigator({
       options: {
         gestureEnabled: true,
         headerShown: false,
-        presentation: "formSheet",
-        sheetAllowedDetents: [0.7, 0.92],
-        sheetGrabberVisible: true,
+        // Android pushes settings as a regular full page with an in-screen
+        // back header; iOS keeps the detented form sheet.
+        ...(Platform.OS === "android"
+          ? { presentation: "card" as const }
+          : {
+              presentation: "formSheet" as const,
+              sheetAllowedDetents: [0.7, 0.92],
+              sheetGrabberVisible: true,
+            }),
+      },
+    }),
+    SettingsLegal: createNativeStackScreen({
+      screen: SettingsLegalRouteScreen,
+      linking: "settings/legal",
+      options: {
+        ...LEGAL_DOCUMENT_HEADER_OPTIONS,
+        title: "Legal",
       },
     }),
     ConnectOnboarding: createNativeStackScreen({
       screen: ConnectOnboardingRouteScreen,
       linking: "connect-onboarding",
       options: {
-        // Root screenOptions hide headers; formSheets that want the native
-        // title bar opt back in with the sheet header preset.
-        ...SHEET_SOLID_HEADER_OPTIONS,
+        // A root-level Android formSheet does not host the native stack bar;
+        // the route renders an embedded AndroidSheetHeader instead.
+        ...(Platform.OS === "android" ? { headerShown: false } : SHEET_SOLID_HEADER_OPTIONS),
         title: "Set up T3 Connect",
         gestureEnabled: true,
         presentation: "formSheet",
@@ -444,9 +527,15 @@ export const RootStack = createNativeStackNavigator({
       linking: "connections",
       options: {
         title: "Environments",
-        presentation: "formSheet",
-        sheetAllowedDetents: [0.55, 0.7],
-        sheetGrabberVisible: true,
+        // Android: full page; the screen renders its own AndroidScreenHeader,
+        // so the native bar stays hidden. iOS keeps the sheet.
+        ...(Platform.OS === "android"
+          ? { presentation: "card" as const, headerShown: false }
+          : {
+              presentation: "formSheet" as const,
+              sheetAllowedDetents: [0.55, 0.7],
+              sheetGrabberVisible: true,
+            }),
       },
     }),
     ConnectionsNew: createNativeStackScreen({
@@ -468,9 +557,15 @@ export const RootStack = createNativeStackNavigator({
       options: {
         gestureEnabled: true,
         headerShown: false,
-        presentation: "formSheet",
-        sheetAllowedDetents: [0.92],
-        sheetGrabberVisible: true,
+        // Android pushes the flow as a regular full page — the draft should
+        // read like a thread that just doesn't exist yet; iOS keeps the sheet.
+        ...(Platform.OS === "android"
+          ? { presentation: "card" as const }
+          : {
+              presentation: "formSheet" as const,
+              sheetAllowedDetents: [0.92],
+              sheetGrabberVisible: true,
+            }),
       },
     }),
     NotFound: createNativeStackScreen({
